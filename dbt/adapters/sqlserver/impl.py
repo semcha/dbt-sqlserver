@@ -3,6 +3,7 @@ from dbt.adapters.base.meta import available
 from dbt.adapters.base.impl import AdapterConfig
 from dbt.adapters.base.relation import BaseRelation
 from dbt.adapters.sql import SQLAdapter
+from dbt.adapters.sqlserver import SQLServerColumn
 from dbt.adapters.sqlserver import SQLServerConnectionManager
 from dbt.dataclass_schema import dbtClassMixin, ValidationError
 import agate
@@ -133,6 +134,7 @@ class SQLServerConfig(AdapterConfig):
     indexes: Optional[List[SQLServerIndexConfig]] = None
 
 class SQLServerAdapter(SQLAdapter):
+    Column = SQLServerColumn
     ConnectionManager = SQLServerConnectionManager
 
     @classmethod
