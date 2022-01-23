@@ -216,6 +216,53 @@ Many DBT utils macros are supported, but they require the addition of the `tsql_
 You can find the package and installation instructions in the [tsql-utils repo](https://github.com/dbt-msft/tsql-utils).
 
 ### Indexes
+It is now possible to define a regular sql server index on a table in the `indexes` section of a model configuration.
+To use this way of creating indexes you need to disable `as_columnstore` in model configuration.
+You can do this in `dbt_project.yml` for the whole project or for this model specifically.
+```yaml
+models:
+  my_project:
+    +as_columnstore: false
+```
+
+Supported parameters:
+- `type` (**required**): index type, accepted values: `clustered`, `nonclustered`, `clustered columnstore`, `nonclustered columnstore`
+- `columns`: columns list in index
+- `unique`: index uniquiness
+- `include_columns`: include columns list for nonclustered indexes
+- `partition_schema`: partition schema name for partitioning
+- `partition_column`: partition column name for partitioning
+- `data_compression`: data compression for indexes, accepted values: `row`, `page`, `columnstore`, `columnstore_archive` 
+
+Examples:
+```sql
+{{ config(
+    materialized = "table",
+    as_columnstore = false,
+    indexes = [
+        {"type": "clustered", "columns": ["customer_id"], "unique": True},
+        {"type": "nonclustered", "columns": ["number_of_orders"], "include_columns": ["first_order"]},
+        {"type": "clustered columnstore"},
+        {"type": "nonclustered columnstore", "columns": ["customer_id", "first_name", "last_name"]}
+        {"type": "nonclustered", "columns": ["customer_id"], "partition_schema": "ps_by_month",
+          "partition_column": "order_date", "data_compression": "page"}
+    ]
+)}}
+```
+
+Matrix of compatibility of parameters and index types:
+| Parameter / Index type                                       | CLUSTERED | NONCLUSTERED | CLUSTERED COLUMNSTORE | NONCLUSTERED COLUMNSTORE |
+| ------------------------------------------------------------ | --------- | ------------ | --------------------- | ------------------------ |
+| `columns`                                                    | ✅         | ✅            | ❌                     | ✅                        |
+| `unique`                                                     | ✅         | ✅            | ❌                     | ❌                        |
+| `include_columns`                                            | ❌         | ✅            | ❌                     | ❌                        |
+| `partition_schema`                                           | ✅         | ✅            | ❌                     | ✅                        |
+| `partition_column`                                           | ✅         | ✅            | ❌                     | ✅                        |
+| `data_compression` (`ROW` and `PAGE`)                        | ✅         | ✅            | ❌                     | ❌                        |
+| `data_compression` (`COLUMNSTORE` and `COLUMNSTORE_ARCHIVE`) | ❌         | ❌            | ✅                     | ✅                        |
+
+### Indexes (old-way)
+
 There is now possible to define a regular sql server index on a table. 
 This is best used when the default clustered columnstore index materialisation is not suitable. 
 One reason would be that you need a large table that usually is queried one row at a time.

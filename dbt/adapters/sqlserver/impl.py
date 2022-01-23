@@ -1,12 +1,136 @@
+from dataclasses import dataclass
+from dbt.adapters.base.meta import available
+from dbt.adapters.base.impl import AdapterConfig
+from dbt.adapters.base.relation import BaseRelation
 from dbt.adapters.sql import SQLAdapter
 from dbt.adapters.sqlserver import SQLServerConnectionManager
-from dbt.adapters.base.relation import BaseRelation
+from dbt.dataclass_schema import dbtClassMixin, ValidationError
 import agate
 from typing import (
     Optional, Tuple, Callable, Iterable, Type, Dict, Any, List, Mapping,
     Iterator, Union, Set
 )
+import dbt.exceptions
+import dbt.utils
 
+
+@dataclass
+class SQLServerIndexConfig(dbtClassMixin):
+    type: str
+    columns: Optional[List[str]] = None
+    unique: Optional[bool] = None
+    include_columns: Optional[List[str]] = None
+    partition_schema: Optional[str] = None
+    partition_column: Optional[str] = None
+    data_compression: Optional[str] = None
+
+    def render(self, relation):
+        """
+        Name the index according to the following format:
+        index type (cix/ix/ccix/ncix), relation name, key columns (joined by `_`).
+        Example index name: cix_customers__customer_id.
+        """
+        index_types = {
+            'clustered': 'cix',
+            'nonclustered': 'ix',
+            'clustered columnstore': 'ccix',
+            'nonclustered columnstore': 'ncix'
+        }
+        index_type = index_types[self.type.lower()]
+        index_name = index_type + '_' + relation.identifier
+        if self.columns:
+            columns = '_'.join(self.columns)
+            index_name += '__' + columns
+        return index_name[0:127]
+
+    @classmethod
+    def parse(cls, raw_index) -> Optional['SQLServerIndexConfig']:
+        if raw_index is None:
+            return None
+        try:
+            cls.validate(raw_index)
+            ix_config = cls.from_dict(raw_index)
+            ix_type = ix_config.type.lower()
+            if ix_config.data_compression:
+                ix_data_compression = ix_config.data_compression.lower()
+            else:
+                ix_data_compression = None
+            # Check index type
+            if ix_type not in ['clustered', 'nonclustered', 'clustered columnstore', 'nonclustered columnstore']:
+                dbt.exceptions.raise_compiler_error(
+                    f'Invalid index type:\n'
+                    f'  Got: {ix_config.type}\n'
+                    f'  type should be either: "clustered", "nonclustered", "clustered columnstore", "nonclustered columnstore"'
+                )
+            # Check columns parameter
+            elif ix_type not in ['clustered columnstore'] and not ix_config.columns:
+                dbt.exceptions.raise_compiler_error(
+                    f'The "columns" parameter is required for all types of indexes (except clustered columnstore).\n'
+                    f'  Add the "columns" parameter.'
+                )
+            # Columns parameter doesn't work with clustered columnstore indexes
+            elif ix_type in ['clustered columnstore'] and ix_config.columns:
+                dbt.exceptions.raise_compiler_error(
+                    f'Clustered columnstore index already contains all columns.\n'
+                    f'  Remove the "columns" parameter.'
+                )
+            # Check unique parameter
+            elif ix_config.unique and ix_type not in ['clustered', 'nonclustered']:
+                dbt.exceptions.raise_compiler_error(
+                    f'Uniqueness does not work with columnstore indexes.\n'
+                    f'  Remove the "unique" parameter.'
+                )
+            # Check include columns parameter
+            elif ix_config.include_columns and ix_type not in ['nonclustered']:
+                dbt.exceptions.raise_compiler_error(
+                    f'Only nonclustered indexes may contain included columns.\n'
+                    f'  Remove the "include_columns" parameter.'
+                )
+            # Check partitioning parameters
+            elif ((ix_config.partition_schema and not ix_config.partition_column) or 
+                (ix_config.partition_column and not ix_config.partition_schema)):
+                dbt.exceptions.raise_compiler_error(
+                    f'For partitioning must specify both "partition_schema" and "partition_column" parameters'
+                )
+            # Check data compression parameter
+            elif (ix_config.data_compression
+                and ix_data_compression not in ['row', 'page', 'columnstore', 'columnstore_archive']):
+                dbt.exceptions.raise_compiler_error(
+                    f'Invalid data compression:\n'
+                    f'  Got: {ix_config.data_compression}\n'
+                    f'  data compression should be either: "row", "page", "columnstore", "columnstore_archive"'
+                )
+            # Data compression for row-store indexes
+            elif (ix_data_compression in ['row', 'page']
+                and ix_type not in ['clustered', 'nonclustered']):
+                dbt.exceptions.raise_compiler_error(
+                    f'ROW and PAGE data compression works only with row-store indexes.\n'
+                    f'  Remove or fix the "data_compression" parameter.'
+                )
+            # Data compression for columnstore indexes
+            elif (ix_data_compression in ['columnstore', 'columnstore_archive']
+                and ix_type not in ['clustered columnstore', 'nonclustered columnstore']):
+                dbt.exceptions.raise_compiler_error(
+                    f'COLUMNSTORE and COLUMNSTORE_ARCHIVE data compression works only with columnstore indexes.\n'
+                    f'  Remove or fix the "data_compression" parameter.'
+                )
+            else:
+                return cls.from_dict(raw_index)
+        except ValidationError as exc:
+            msg = dbt.exceptions.validator_error_message(exc)
+            dbt.exceptions.raise_compiler_error(
+                f'Could not parse index config: {msg}'
+            )
+        except TypeError:
+            dbt.exceptions.raise_compiler_error(
+                f'Invalid index config:\n'
+                f'  Got: {raw_index}\n'
+                f'  Expected a dictionary with at minimum a "type" key'
+            )
+
+@dataclass
+class SQLServerConfig(AdapterConfig):
+    indexes: Optional[List[SQLServerIndexConfig]] = None
 
 class SQLServerAdapter(SQLAdapter):
     ConnectionManager = SQLServerConnectionManager
@@ -40,6 +164,10 @@ class SQLServerAdapter(SQLAdapter):
     @classmethod
     def convert_time_type(cls, agate_table, col_idx):
         return "datetime"
+
+    @available
+    def parse_index(self, raw_index: Any) -> Optional[SQLServerIndexConfig]:
+        return SQLServerIndexConfig.parse(raw_index)
 
     # Methods used in adapter tests
     def timestamp_add_sql(
